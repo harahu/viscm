@@ -36,7 +36,7 @@ def cli():
     parser.add_argument(
         "--uniform-space",
         metavar="SPACE",
-        default="CAM02-UCS",
+        default="CAM16-UCS",
         dest="uniform_space",
         help="The perceptually uniform space to use. Usually "
         "you should leave this alone. You can pass 'CIELab' "
@@ -124,7 +124,7 @@ def _make_window(
     save: Union[Path, None],
     quit_immediately: bool,
 ) -> Union[gui.ViewerWindow, gui.EditorWindow]:
-    # Hold a reference so it doesn't get GC'ed
+    # Hold a reference, so it doesn't get GC'ed
     fig = plt.figure()
     figure_canvas = gui.FigureCanvas(fig)
 

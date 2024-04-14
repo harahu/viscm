@@ -3,13 +3,15 @@
 # Copyright (C) 2015 Stefan van der Walt <stefanv@berkeley.edu>
 # See file LICENSE.txt for license information.
 
-# Simple script using CIECAM02 and CAM02-UCS to visualize properties of a
+# Simple script using CIECAM16 and CAM16-UCS to visualize properties of a
 # matplotlib colormap
 
 import json
 import os.path
 import sys
+from typing import Callable
 
+import colour
 import matplotlib
 import matplotlib.colors
 import matplotlib.pyplot as plt
@@ -18,7 +20,6 @@ import numpy as np
 from colorspacious import (
     CIECAM02Space,
     CIECAM02Surround,
-    cspace_convert,
     cspace_converter,
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -118,6 +119,7 @@ class TransformedCMap(matplotlib.colors.Colormap):
     def __init__(self, transform, base_cmap):
         self.transform = transform
         self.base_cmap = base_cmap
+        self.N = base_cmap.N
 
     def __call__(self, *args, **kwargs):
         bts = kwargs.pop("bytes", False)
@@ -195,12 +197,26 @@ def lookup_colormap_by_name(name):
     raise ValueError(f"Can't find colormap {name!r}")
 
 
+def get_srgb_to_uniform_converter(uniform_space: str) -> Callable:
+    if uniform_space == "CAM16-UCS":
+        return lambda rgb: colour.convert(rgb, 'sRGB', "CAM16UCS") * 100
+    else:
+        return cspace_converter("sRGB1", uniform_space)
+
+
+def get_uniform_to_srgb_converter(uniform_space: str) -> Callable:
+    if uniform_space == "CAM16-UCS":
+        return lambda uniform: colour.convert(uniform / 100, "CAM16UCS", 'sRGB')
+    else:
+        return cspace_converter(uniform_space, "sRGB1")
+
+
 class viscm:
     def __init__(
         self,
         cm,
         figure=None,
-        uniform_space="CAM02-UCS",
+        uniform_space="CAM16-UCS",
         name=None,
         N=256,
         N_dots=50,
@@ -212,7 +228,8 @@ class viscm:
             name = cm.name
         if figure is None:
             figure = plt.figure()
-        self._sRGB1_to_uniform = cspace_converter("sRGB1", uniform_space)
+
+        self._sRGB1_to_uniform = get_srgb_to_uniform_converter(uniform_space)
 
         self.figure = figure
         self.figure.suptitle(f"Colormap evaluation: {name}", fontsize=24)
@@ -462,7 +479,7 @@ def sRGB_gamut_patch(uniform_space, resolution=20):
     # work around colorspace transform bugginess in handling high-dim
     # arrays
     sRGB_quads_2d = sRGB_quads.reshape((-1, 3))
-    Jpapbp_quads_2d = cspace_convert(sRGB_quads_2d, "sRGB1", uniform_space)
+    Jpapbp_quads_2d = get_srgb_to_uniform_converter(uniform_space)(sRGB_quads_2d)
     Jpapbp_quads = Jpapbp_quads_2d.reshape((-1, 4, 3))
     gamut_patch = mpl_toolkits.mplot3d.art3d.Poly3DCollection(
         Jpapbp_quads[:, :, [1, 2, 0]]
@@ -487,44 +504,10 @@ def sRGB_gamut_Jp_slice(
         ),
         axis=2,
     )
-    sRGB = cspace_convert(Jpapbp, uniform_space, "sRGB1")
+    sRGB = get_uniform_to_srgb_converter(uniform_space)(Jpapbp)
     sRGBA = np.concatenate((sRGB, np.ones(sRGB.shape[:2] + (1,))), axis=2)
     sRGBA[np.any((sRGB < 0) | (sRGB > 1), axis=-1)] = [0, 0, 0, 0]
     return sRGBA
-
-
-def draw_pure_hue_angles(ax):
-    # Pure hue angles from CIECAM-02
-    for color, angle in [("r", 20.14), ("y", 90.00), ("g", 164.25), ("b", 237.53)]:
-        x = np.cos(np.deg2rad(angle))
-        y = np.sin(np.deg2rad(angle))
-        ax.plot([0, x * 1000], [0, y * 1000], color + "--")
-
-
-def draw_sRGB_gamut_Jp_slice(
-    ax, Jp, uniform_space, ap_lim=(-50, 50), bp_lim=(-50, 50), **kwargs
-):
-    sRGB = sRGB_gamut_Jp_slice(
-        Jp, uniform_space, ap_lim=ap_lim, bp_lim=bp_lim, **kwargs
-    )
-    im = ax.imshow(sRGB, aspect="equal", extent=ap_lim + bp_lim, origin="lower")
-    draw_pure_hue_angles(ax)
-    ax.set_xlim(ap_lim)
-    ax.set_ylim(bp_lim)
-    return im
-
-
-# def sRGB_gamut_J_slice(J,
-#                        ap_lim=(-50, 50), bp_lim=(-50, 50), resolution=200):
-#     a_grid, b_grid = np.mgrid[ap_lim[0] : ap_lim[1] : resolution * 1j,
-#                               bp_lim[0] : bp_lim[1] : resolution * 1j]
-#     J_grid = J * np.ones((resolution, resolution))
-#     h = np.rad2deg(np.arctan2(b_grid, a_grid))
-#     M = np.hypot(a_grid, b_grid)
-#     XYZ = ViewingConditions.sRGB.CIECAM02_to_XYZ(J=J_grid, M=M, h=h)
-#     sRGB = XYZ_to_sRGB(XYZ)
-#     sRGB[np.any((sRGB < 0) | (sRGB > 1), axis=-1)] = np.nan
-#     return sRGB
 
 
 def _viscm_editor_axes(fig):
@@ -539,7 +522,7 @@ class viscm_editor:
     def __init__(
         self,
         figure=None,
-        uniform_space="CAM02-UCS",
+        uniform_space="CAM16-UCS",
         min_Jp=15,
         max_Jp=95,
         xp=None,
@@ -753,7 +736,7 @@ class BezierCMapModel:
         self.Jp_minmax_trigger.add_callback(self.trigger.fire)
         self.filter_k_trigger = Trigger()
         self.filter_k_trigger.add_callback(self.trigger.fire)
-        self.uniform_to_sRGB1 = cspace_converter(uniform_space, "sRGB1")
+        self.uniform_to_sRGB1 = get_uniform_to_srgb_converter(uniform_space)
         self.bezier_model.trigger.add_callback(self.trigger.fire)
 
     def set_Jp_minmax(self, min_Jp, max_Jp):
@@ -772,7 +755,7 @@ class BezierCMapModel:
         Jp, ap, bp = interp1d(np.linspace(0, 1, Jp.size), np.array([Jp, ap, bp]))(point)
         return Jp, ap, bp
 
-    def get_Jpapbp(self, num=200):
+    def get_Jpapbp(self, num=256):
         ap, bp = self.bezier_model.get_bezier_points_at(np.linspace(0, 1, num))
         at = np.linspace(0, 1, num)
         if self.cmtype == "diverging":
@@ -782,7 +765,7 @@ class BezierCMapModel:
         Jp = (self.max_Jp - self.min_Jp) * at + self.min_Jp
         return Jp, ap, bp
 
-    def get_sRGB(self, num=200):
+    def get_sRGB(self, num=256):
         # Return sRGB and out-of-gamut mask
         Jp, ap, bp = self.get_Jpapbp(num=num)
         sRGB = self.uniform_to_sRGB1(np.column_stack((Jp, ap, bp)))
@@ -1200,7 +1183,7 @@ class EditorWindow(QtWidgets.QMainWindow):
             # maximum width
             smoothness_slider_num = QtWidgets.QLabel("1000.00")
             metrics = QtGui.QFontMetrics(smoothness_slider_num.font())
-            max_width = metrics.width("1000.00")
+            max_width = metrics.horizontalAdvance("1000.00")
             smoothness_slider_num.setFixedWidth(max_width)
             smoothness_slider_num.setAlignment(Qt.AlignRight)
             self.smoothness_slider_num = smoothness_slider_num
@@ -1294,7 +1277,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         fileName, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             caption="Export file",
-            directory=self.viscm_editor.name + ".py",
+            dir=self.viscm_editor.name + ".py",
             filter=".py (*.py)",
         )
         if fileName:
@@ -1310,7 +1293,7 @@ class EditorWindow(QtWidgets.QMainWindow):
         fileName, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             caption="Save file",
-            directory=self.viscm_editor.name + ".jscm",
+            dir=self.viscm_editor.name + ".jscm",
             filter="JSCM Files (*.jscm)",
         )
         if fileName:
